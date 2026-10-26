@@ -1,111 +1,101 @@
 """
-Main entry point for the LZT Market AI Multi-Agent Arbitrage System.
-Supports interactive terminal dashboard, automated single-cycle runs,
-background loop execution, and test suite verification.
+Main Entry Point for LZT Terminal Trader.
+Usage:
+    python main.py              # Starts interactive Rich terminal UI (runs wizard if unconfigured)
+    python main.py --wizard     # Directly opens the 5-step setup wizard
+    python main.py --diag       # Runs system diagnostics and exits
+    python main.py --cycle      # Runs a single automated pipeline cycle and exits
+    python main.py --test       # Runs test suite and exits
 """
 
-import asyncio
-import sys
 import argparse
-import signal
-import logging
+import asyncio
+from pathlib import Path
+import sys
 from rich.console import Console
+from rich.table import Table
 
 from config import settings
-from database.repository import repository
-from orchestrator.orchestrator import orchestrator
-from ui.terminal import terminal_ui
-from ui.commands import handle_command
-from orchestrator.registry import agent_registry
-from models.messages import AgentMessage
+from app.database import db
+from app.diagnostics import run_diagnostics
+from app.orchestrator import orchestrator
+from app.setup_wizard import run_setup_wizard
+from app.terminal_ui import terminal_ui
 
 console = Console()
 
 
-async def initialize_application():
-    """Initializes database schema and boots all 10 core agents."""
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
-    )
-    # Initialize DB tables
-    await repository.init()
-    # Initialize Orchestrator and core agents
-    orchestrator.initialize_system()
-
-
-async def run_interactive_shell():
-    """Starts the full interactive Rich terminal UI."""
-    await terminal_ui.render_full_screen()
-    console.print("\n[bold cyan]Interactive Control Console[/] (type [yellow]'help'[/] for commands, [yellow]'exit'[/] to quit)")
-
-    running = True
-    while running:
-        try:
-            cmd = await asyncio.to_thread(input, "\n[lzt-market-agent] > ")
-            running = await handle_command(cmd)
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[yellow]Received interrupt signal. Shutting down...[/]")
-            orchestrator.stop_autonomous_loop()
-            break
-        except Exception as e:
-            console.print(f"[bold red]Command error:[/] {e}")
+async def initialize_app():
+    """Ensures database tables are initialized and directory structure is ready."""
+    Path("data").mkdir(parents=True, exist_ok=True)
+    Path("logs").mkdir(parents=True, exist_ok=True)
+    await db.init_db()
 
 
 async def async_main():
-    parser = argparse.ArgumentParser(description="LZT Market AI Multi-Agent Arbitrage System")
+    parser = argparse.ArgumentParser(description="LZT Terminal Trader - AI Multi-Agent Arbitrage System")
+    parser.add_argument("--wizard", action="store_true", help="Launch interactive 5-step setup wizard")
+    parser.add_argument("--diag", action="store_true", help="Run system diagnostics and exit")
     parser.add_argument("--cycle", action="store_true", help="Run a single arbitrage cycle and exit")
-    parser.add_argument("--loop", action="store_true", help="Run in continuous background loop mode")
     parser.add_argument("--test", action="store_true", help="Run automated test suite and exit")
-    parser.add_argument("--dashboard", action="store_true", help="Render dashboard once and exit")
     args = parser.parse_args()
 
-    await initialize_application()
+    # Diagnostic flag
+    if args.diag:
+        await initialize_app()
+        res = await run_diagnostics()
+        table = Table(title="Диагностика LZT Terminal Trader", show_header=True, header_style="bold magenta")
+        table.add_column("Категория", style="cyan")
+        table.add_column("Проверка", style="white")
+        table.add_column("Статус", style="bold")
+        table.add_column("Подробности", style="dim")
+        for c in res["checks"]:
+            st = c["status"]
+            st_style = "green" if st == "PASS" else "yellow" if st in ("WARN", "INFO") else "red"
+            table.add_row(c["category"], c["name"], f"[{st_style}]{st}[/]", c["details"])
+        console.print(table)
+        console.print(f"\nОбщий статус: [bold]{res['overall_status']}[/bold]")
+        sys.exit(0 if res["overall_status"] != "ERROR" else 1)
 
-    if args.test:
-        console.print("[cyan]Running QA regression suite...[/]")
-        qa = agent_registry.get("qa_agent")
-        if qa:
-            msg = await qa.execute(AgentMessage(
-                agent_id=qa.agent_id,
-                task_type="RUN_TESTS",
-                input_data={"target": "all"}
-            ))
-            rep = msg.output_data or {}
-            console.print(f"Tests Passed: {rep.get('total_passed')}, Failed: {rep.get('total_failed')}")
-            sys.exit(0 if rep.get("is_system_ready") else 1)
-        sys.exit(1)
+    # Setup Wizard direct launch
+    if args.wizard:
+        await initialize_app()
+        await run_setup_wizard()
+        return
 
+    # Single cycle execution
     if args.cycle:
-        console.print("[cyan]Running single arbitrage cycle...[/]")
-        res = await orchestrator.run_single_arbitrage_cycle()
-        console.print(f"[bold green]Result:[/] {res}")
-        await terminal_ui.render_full_screen()
+        await initialize_app()
+        console.print("[cyan]Запуск цикла арбитража...[/cyan]")
+        summary = await orchestrator.run_pipeline_cycle(auto_purchase=False)
+        console.print(f"[bold green]Цикл завершён:[/] Проверено: {summary.get('scanned_candidates')}, Одобрено: {summary.get('pricing_approved')}")
         return
 
-    if args.dashboard:
-        await terminal_ui.render_full_screen()
-        return
+    # Run tests flag
+    if args.test:
+        import pytest
+        ret_code = pytest.main(["-v", "tests/"])
+        sys.exit(ret_code)
 
-    if args.loop:
-        console.print("[green]Running in continuous loop mode. Press Ctrl+C to terminate.[/]")
-        try:
-            await orchestrator.start_autonomous_loop()
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            console.print("[yellow]Loop stopped.[/]")
-        return
+    # First-run detection: if .env doesn't exist, automatically launch setup wizard
+    if not settings.is_configured():
+        console.print("[yellow]Конфигурационный файл .env не обнаружен. Запуск мастера первоначальной настройки...[/yellow]\n")
+        wizard_ok = await run_setup_wizard()
+        if not wizard_ok:
+            console.print("[red]Настройка отменена. Выход.[/red]")
+            return
 
-    # Default: Interactive Shell
-    await run_interactive_shell()
+    # Normal Interactive Terminal Mode
+    await initialize_app()
+    await terminal_ui.main_menu_loop()
 
 
-def cli_entrypoint():
-    """Synchronous wrapper for pyproject.toml script entrypoint."""
+def main():
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:
-        pass
+        console.print("\n[yellow]Программа завершена.[/yellow]")
 
 
 if __name__ == "__main__":
-    cli_entrypoint()
+    main()
