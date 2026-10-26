@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lzt-market-arbitrage"
+version = "1.0.0"
+description = "Autonomous AI Multi-Agent Arbitrage System for LZT Market Telegram Accounts"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Antigravity AI Team" }
+]
+dependencies = [
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "sqlalchemy>=2.0.30",
+    "aiosqlite>=0.20.0",
+    "httpx>=0.27.0",
+    "rich>=13.9.0",
+    "textual>=0.80.0",
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+lztmarket = "main:cli_entrypoint"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+pythonpath = ["."]
