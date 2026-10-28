@@ -18,8 +18,9 @@
 
 ```bash
 # Клонирование репозитория
-git clone https://github.com/<owner>/lzt-terminal-trader.git
+git clone https://github.com/priyanikkk/lzt-terminal-trader.git
 cd lzt-terminal-trader
+
 
 # Создание и активация виртуального окружения
 python3 -m venv .venv
