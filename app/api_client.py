@@ -103,6 +103,7 @@ class LZTMarketClient:
         self.base_url = settings.LZT_API_BASE_URL.rstrip("/")
         self.timeout = settings.LZT_REQUEST_TIMEOUT
         self._last_request_time = 0.0
+        self._lock = asyncio.Lock()
 
     @property
     def is_simulation(self) -> bool:
@@ -119,13 +120,53 @@ class LZTMarketClient:
         return headers
 
     async def _rate_limit(self) -> None:
-        """Throttle requests to respect rate limit (RPS)."""
-        now = asyncio.get_event_loop().time()
-        elapsed = now - self._last_request_time
-        min_interval = 1.0 / max(settings.LZT_RATE_LIMIT_RPS, 1.0)
-        if elapsed < min_interval:
-            await asyncio.sleep(min_interval - elapsed)
-        self._last_request_time = asyncio.get_event_loop().time()
+        """Throttle requests to respect rate limit (RPS) in a coroutine-safe manner."""
+        async with self._lock:
+            now = asyncio.get_event_loop().time()
+            elapsed = now - self._last_request_time
+            min_interval = 1.0 / max(settings.LZT_RATE_LIMIT_RPS, 1.0)
+            if elapsed < min_interval:
+                await asyncio.sleep(min_interval - elapsed)
+            self._last_request_time = asyncio.get_event_loop().time()
+
+    def _normalize_telegram_item(self, it: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalizes Telegram account listing fields from LZT Market API response."""
+        country = it.get("telegram_country") or it.get("country") or "UNKNOWN"
+        sb = it.get("telegram_spamblock") if "telegram_spamblock" in it else it.get("spamblock", False)
+        spamblock = bool(sb) and str(sb).lower() not in ("0", "false", "no", "")
+
+        two_fa = it.get("telegram_two_step") if "telegram_two_step" in it else it.get("has_2fa", False)
+        has_2fa = bool(two_fa) and str(two_fa).lower() not in ("0", "false", "no", "")
+
+        fmt = it.get("telegram_format") or it.get("format") or it.get("format_type") or "session+json"
+
+        age_days = it.get("age_days", 0)
+        if not age_days and it.get("telegram_reg_date"):
+            try:
+                import time
+                reg_ts = float(it["telegram_reg_date"])
+                age_days = int((time.time() - reg_ts) / 86400)
+            except Exception:
+                age_days = 0
+
+        seller = it.get("seller")
+        seller_username = seller.get("username", "Unknown") if isinstance(seller, dict) else str(seller or "Unknown")
+
+        return {
+            "item_id": it.get("item_id"),
+            "title": it.get("title", "Telegram Account"),
+            "price": float(it.get("price", 0.0)),
+            "currency": it.get("currency", "rub"),
+            "country": str(country).upper(),
+            "has_2fa": has_2fa,
+            "spamblock": spamblock,
+            "format_type": str(fmt).lower(),
+            "age_days": max(0, int(age_days)),
+            "seller": seller_username,
+            "description": it.get("description", ""),
+            "raw_data": it,
+        }
+
 
     async def test_connection(self) -> Tuple[bool, str, Dict[str, Any]]:
         """
@@ -242,23 +283,7 @@ class LZTMarketClient:
             data = resp.json()
 
             items = data.get("items", [])
-            parsed = []
-            for it in items:
-                parsed.append({
-                    "item_id": it.get("item_id"),
-                    "title": it.get("title", "Telegram Account"),
-                    "price": float(it.get("price", 0.0)),
-                    "currency": it.get("currency", "rub"),
-                    "country": it.get("country", "UNKNOWN"),
-                    "has_2fa": bool(it.get("has_2fa", False)),
-                    "spamblock": bool(it.get("spamblock", False)),
-                    "format_type": it.get("format", "session+json"),
-                    "age_days": it.get("age_days", 0),
-                    "seller": it.get("seller", {}).get("username", "Unknown"),
-                    "description": it.get("description", ""),
-                    "raw_data": it,
-                })
-            return parsed
+            return [self._normalize_telegram_item(it) for it in items]
 
     async def get_item_details(self, item_id: int) -> Optional[Dict[str, Any]]:
         """Retrieves details of a single listing."""
@@ -276,20 +301,7 @@ class LZTMarketClient:
             resp.raise_for_status()
             data = resp.json()
             item = data.get("item", data)
-            return {
-                "item_id": item.get("item_id", item_id),
-                "title": item.get("title", ""),
-                "price": float(item.get("price", 0.0)),
-                "currency": item.get("currency", "rub"),
-                "country": item.get("country", "UNKNOWN"),
-                "has_2fa": bool(item.get("has_2fa", False)),
-                "spamblock": bool(item.get("spamblock", False)),
-                "format_type": item.get("format", "session+json"),
-                "age_days": item.get("age_days", 0),
-                "seller": item.get("seller", {}).get("username", "Unknown"),
-                "description": item.get("description", ""),
-                "raw_data": item,
-            }
+            return self._normalize_telegram_item(item)
 
     async def check_item(self, item_id: int) -> Tuple[bool, str]:
         """Checks if the account is currently valid on the market before purchasing."""
@@ -304,12 +316,40 @@ class LZTMarketClient:
         await self._rate_limit()
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(f"{self.base_url}/{item_id}/check", headers=self._get_headers())
-                if resp.status_code == 200:
-                    data = resp.json()
-                    status = data.get("status", "ok")
-                    return (status == "ok", data.get("message", "Verification passed."))
-                return (False, f"Check returned HTTP {resp.status_code}: {resp.text[:100]}")
+                for attempt in range(3):
+                    try:
+                        resp = await client.post(
+                            f"{self.base_url}/{item_id}/check-account",
+                            headers=self._get_headers()
+                        )
+                        if resp.status_code in (404, 405):
+                            resp = await client.get(f"{self.base_url}/{item_id}/check", headers=self._get_headers())
+                    except Exception:
+                        resp = await client.get(f"{self.base_url}/{item_id}/check", headers=self._get_headers())
+
+                    if resp.status_code == 200:
+                        try:
+                            data = resp.json()
+                        except Exception:
+                            return (False, f"Invalid JSON response from check endpoint: {resp.text[:100]}")
+
+                        if data.get("retry_request"):
+                            await asyncio.sleep(1.0)
+                            continue
+
+                        if "errors" in data and data["errors"]:
+                            err_msg = "; ".join(str(e) for e in data["errors"])
+                            return (False, f"Account check failed: {err_msg}")
+
+                        status = data.get("status", "ok")
+                        return (status == "ok", data.get("message", "Verification passed."))
+                    elif resp.status_code == 429:
+                        await asyncio.sleep(2.0)
+                        continue
+                    else:
+                        return (False, f"Check returned HTTP {resp.status_code}: {resp.text[:100]}")
+
+                return (False, "Verification timed out waiting for LZT check result.")
         except Exception as e:
             return (False, f"Error checking item #{item_id}: {str(e)}")
 
@@ -346,7 +386,17 @@ class LZTMarketClient:
                     json=payload,
                 )
                 if resp.status_code == 200:
-                    data = resp.json()
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        return (False, f"Invalid JSON response from fast-buy: {resp.text[:100]}", {})
+
+                    if "errors" in data and data["errors"]:
+                        err_msg = "; ".join(str(e) for e in data["errors"])
+                        return (False, f"Purchase error from LZT API: {err_msg}", data)
+                    if "error" in data and data["error"]:
+                        return (False, f"Purchase error from LZT API: {data['error']}", data)
+
                     return (True, f"LIVE PURCHASE SUCCESS: Lot #{item_id} purchased.", data)
                 return (False, f"Purchase failed (HTTP {resp.status_code}): {resp.text[:150]}", {})
         except Exception as e:
@@ -387,10 +437,22 @@ class LZTMarketClient:
                     json=payload,
                 )
                 if resp.status_code == 200:
-                    return (True, "Listing published successfully to LZT Market.", resp.json())
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        return (False, f"Invalid JSON response from publish endpoint: {resp.text[:100]}", {})
+
+                    if "errors" in data and data["errors"]:
+                        err_msg = "; ".join(str(e) for e in data["errors"])
+                        return (False, f"Publishing error from LZT API: {err_msg}", data)
+                    if "error" in data and data["error"]:
+                        return (False, f"Publishing error from LZT API: {data['error']}", data)
+
+                    return (True, "Listing published successfully to LZT Market.", data)
                 return (False, f"Publishing failed (HTTP {resp.status_code}): {resp.text[:150]}", {})
         except Exception as e:
             return (False, f"Exception during publishing: {str(e)}", {})
+
 
 
 api_client = LZTMarketClient()

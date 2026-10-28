@@ -74,8 +74,7 @@ async def async_main():
     # Run tests flag
     if args.test:
         import pytest
-        ret_code = pytest.main(["-v", "tests/"])
-        sys.exit(ret_code)
+        sys.exit(pytest.main(["-v", "tests/"]))
 
     # First-run detection: if .env doesn't exist, automatically launch setup wizard
     if not settings.is_configured():
@@ -91,11 +90,16 @@ async def async_main():
 
 
 def main():
+    if "--test" in sys.argv:
+        import pytest
+        sys.exit(pytest.main(["-v", "tests/"]))
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:
         console.print("\n[yellow]Программа завершена.[/yellow]")
 
+
+cli_entrypoint = main
 
 if __name__ == "__main__":
     main()

@@ -29,39 +29,48 @@ class PurchaseManager:
         """
         Executes a purchase with strict multi-layer verification.
         """
-        # 1. Idempotency Lock
+        if not isinstance(item_id, int) or item_id <= 0:
+            return (False, f"Invalid item ID: {item_id}", {})
+
+        try:
+            price = Decimal(str(price))
+            if price <= Decimal("0.0") or price.is_nan() or price.is_infinite():
+                return (False, f"Invalid purchase price: {price}. Price must be positive.", {})
+        except Exception as e:
+            return (False, f"Malformed purchase price: {e}", {})
+
+        # 1. Immediate In-Flight Lock Acquisition (prevents TOCTOU race)
         if item_id in self._in_flight_locks:
             return (False, f"Purchase of lot #{item_id} is already in-flight.", {})
-
-        if await db.is_item_purchased(item_id):
-            return (False, f"Lot #{item_id} has already been purchased previously.", {})
-
-        # 2. Operator Confirmation Check
-        if settings.MANUAL_PURCHASE_CONFIRMATION and not operator_confirmed:
-            return (False, f"Manual operator confirmation is required for lot #{item_id}.", {})
-
-        # 3. Limit Verifications
-        price = Decimal(str(price))
-        if price > settings.MAX_PURCHASE_PRICE:
-            return (False, f"Price {price:.2f} RUB exceeds MAX_PURCHASE_PRICE ({settings.MAX_PURCHASE_PRICE:.2f} RUB).", {})
-
-        spent_today = await db.get_spent_today()
-        if (spent_today + price) > settings.MAX_DAILY_BUDGET:
-            return (
-                False,
-                f"Purchase of {price:.2f} RUB exceeds MAX_DAILY_BUDGET. (Spent today: {spent_today:.2f} RUB, Limit: {settings.MAX_DAILY_BUDGET:.2f} RUB).",
-                {}
-            )
-
-        current_balance = await db.get_current_balance()
-        buy_fee = price * (settings.BUY_FEE_PERCENT / Decimal("100.0"))
-        total_needed = price + buy_fee
-        if current_balance < total_needed:
-            return (False, f"Insufficient balance ({current_balance:.2f} RUB). Required: {total_needed:.2f} RUB.", {})
-
-        # 4. Acquire Lock & Execute
         self._in_flight_locks.add(item_id)
+
         try:
+            # 2. Check previously purchased state in DB
+            if await db.is_item_purchased(item_id):
+                return (False, f"Lot #{item_id} has already been purchased previously.", {})
+
+            # 3. Operator Confirmation Check
+            if settings.MANUAL_PURCHASE_CONFIRMATION and not operator_confirmed:
+                return (False, f"Manual operator confirmation is required for lot #{item_id}.", {})
+
+            # 4. Limit Verifications
+            if price > settings.MAX_PURCHASE_PRICE:
+                return (False, f"Price {price:.2f} RUB exceeds MAX_PURCHASE_PRICE ({settings.MAX_PURCHASE_PRICE:.2f} RUB).", {})
+
+            spent_today = await db.get_spent_today()
+            if (spent_today + price) > settings.MAX_DAILY_BUDGET:
+                return (
+                    False,
+                    f"Purchase of {price:.2f} RUB exceeds MAX_DAILY_BUDGET. (Spent today: {spent_today:.2f} RUB, Limit: {settings.MAX_DAILY_BUDGET:.2f} RUB).",
+                    {}
+                )
+
+            current_balance = await db.get_current_balance()
+            buy_fee = price * (settings.BUY_FEE_PERCENT / Decimal("100.0"))
+            total_needed = price + buy_fee
+            if current_balance < total_needed:
+                return (False, f"Insufficient balance ({current_balance:.2f} RUB). Required: {total_needed:.2f} RUB.", {})
+
             # Check item status with API first
             check_ok, check_msg = await api_client.check_item(item_id)
             if not check_ok:

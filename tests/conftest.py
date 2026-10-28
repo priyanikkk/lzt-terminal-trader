@@ -15,16 +15,32 @@ from config import settings
 settings.SIMULATION_MODE = True
 settings.LIVE_PURCHASE_ENABLED = False
 settings.DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+settings.MAX_PURCHASE_PRICE = Decimal("350.0")
+settings.MAX_DAILY_BUDGET = Decimal("3000.0")
+settings.MIN_NET_PROFIT = Decimal("50.0")
+settings.MIN_ROI_PERCENT = Decimal("25.0")
+settings.MANUAL_PURCHASE_CONFIRMATION = True
 
 from database.db import init_db
 from database.repository import repository
 from orchestrator.orchestrator import orchestrator
 from models.listings import TelegramAccountListing
+from app.database import db as app_db
+from app.purchases import purchase_manager
 
 
 @pytest.fixture(autouse=True)
 async def setup_test_database():
     """Initializes and clears database schema before each test."""
+    # Reset test settings to known safe defaults
+    settings.SIMULATION_MODE = True
+    settings.LIVE_PURCHASE_ENABLED = False
+    settings.MAX_PURCHASE_PRICE = Decimal("350.0")
+    settings.MAX_DAILY_BUDGET = Decimal("3000.0")
+    settings.MIN_NET_PROFIT = Decimal("50.0")
+    settings.MIN_ROI_PERCENT = Decimal("25.0")
+    settings.MANUAL_PURCHASE_CONFIRMATION = True
+
     await init_db()
     from api.lzt_client import lzt_client
     lzt_client._sim_deleted.clear()
@@ -38,7 +54,23 @@ async def setup_test_database():
         for model in [ListingRecord, TransactionRecord, LedgerRecord, AgentLogRecord, SystemMetricRecord]:
             await session.execute(delete(model))
         await session.commit()
+
+    # Isolate app/database.py
+    purchase_manager._in_flight_locks.clear()
+    await app_db.init_db()
+    async with app_db.get_connection() as conn:
+        for tbl in ["listings", "purchases", "resale_items", "ledger_entries", "logs"]:
+            await conn.execute(f"DELETE FROM {tbl}")
+        await conn.execute(
+            """
+            INSERT INTO ledger_entries (tx_type, amount, balance_after, description, reference_id)
+            VALUES ('deposit', 10000.0, 10000.0, 'Initial Sandbox Balance', 'INIT-DEPOSIT')
+            """
+        )
+        await conn.commit()
+
     yield
+
 
 
 @pytest.fixture

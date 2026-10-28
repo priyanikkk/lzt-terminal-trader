@@ -76,13 +76,27 @@ class MarketScanner:
                 "target_resale_price": float(pricing["target_resale_price"]),
                 "net_profit": float(pricing["net_profit"]),
                 "roi_percent": float(pricing["roi_percent"]),
-                "is_approved": pricing["is_approved"] and inspection.is_safe,
-                "rejection_reasons": pricing["rejection_reasons"],
+                "scenarios": pricing.get("scenarios", {}),
+                "is_approved": (
+                    pricing["is_approved"]
+                    and inspection.recommendation == "APPROVE"
+                    and inspection.confidence_score >= settings.MIN_CONFIDENCE_SCORE
+                ),
+                "rejection_reasons": list(pricing["rejection_reasons"]),
                 "raw_data": item,
             }
 
-            status = "approved" if candidate["is_approved"] else "rejected"
+            if inspection.recommendation != "APPROVE":
+                candidate["rejection_reasons"].append(f"Inspection: {inspection.risk_level} risk ({inspection.recommendation})")
+
+            if candidate["is_approved"]:
+                status = "approved"
+            elif inspection.recommendation == "REVIEW" and pricing["is_approved"]:
+                status = "review"
+            else:
+                status = "rejected"
             candidate["status"] = status
+
 
             # Persist to DB
             await db.save_listing({

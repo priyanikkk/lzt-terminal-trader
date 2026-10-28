@@ -68,7 +68,7 @@ async def run_setup_wizard() -> bool:
         "[dim]Если токена нет прямо сейчас, нажмите Enter для запуска в режиме симуляции.[/dim]"
     )
 
-    token_input = Prompt.ask("Введите LZT API Token (или оставьте пустым)", default="")
+    token_input = Prompt.ask("Введите LZT API Token (или оставьте пустым)", default="", password=True)
     token_input = token_input.strip()
 
     if token_input:
@@ -118,15 +118,15 @@ async def run_setup_wizard() -> bool:
         config_updates["LLM_API_KEY"] = ""
     elif ai_choice == "2":
         config_updates["LLM_PROVIDER"] = "openai"
-        config_updates["LLM_API_KEY"] = Prompt.ask("Введите OpenAI API Key", default="")
+        config_updates["LLM_API_KEY"] = Prompt.ask("Введите OpenAI API Key", default="", password=True)
         config_updates["LLM_MODEL"] = Prompt.ask("Модель", default="gpt-4o-mini")
     elif ai_choice == "3":
         config_updates["LLM_PROVIDER"] = "gemini"
-        config_updates["LLM_API_KEY"] = Prompt.ask("Введите Gemini API Key", default="")
+        config_updates["LLM_API_KEY"] = Prompt.ask("Введите Gemini API Key", default="", password=True)
         config_updates["LLM_MODEL"] = Prompt.ask("Модель", default="gemini-1.5-flash")
     elif ai_choice == "4":
         config_updates["LLM_PROVIDER"] = "anthropic"
-        config_updates["LLM_API_KEY"] = Prompt.ask("Введите Anthropic API Key", default="")
+        config_updates["LLM_API_KEY"] = Prompt.ask("Введите Anthropic API Key", default="", password=True)
         config_updates["LLM_MODEL"] = Prompt.ask("Модель", default="claude-3-5-haiku-latest")
 
     # =========================================================================
@@ -158,8 +158,9 @@ async def run_setup_wizard() -> bool:
     table.add_column("Значение", style="yellow")
 
     for k, v in config_updates.items():
-        val_display = "******" if "KEY" in k or "TOKEN" in k and v else v
+        val_display = "******" if ("KEY" in k or "TOKEN" in k) and v else v
         table.add_row(k, str(val_display))
+
 
     console.print(table)
 

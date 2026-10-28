@@ -4,7 +4,7 @@ All financial computations strictly utilize Python's Decimal type to prevent flo
 """
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING
 from typing import Any, Dict, Optional
 
 from config import settings
@@ -24,9 +24,9 @@ class ProfitMetrics:
     is_profitable: bool
 
 
-def round_rub(val: Decimal) -> Decimal:
+def round_rub(val: Decimal, rounding=ROUND_HALF_UP) -> Decimal:
     """Rounds a Decimal value to 2 decimal places."""
-    return val.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return val.quantize(Decimal("0.01"), rounding=rounding)
 
 
 def calculate_profit(
@@ -62,7 +62,8 @@ def calculate_profit(
 
     fee_factor = Decimal("1.0") - (r_fee_pct / Decimal("100.0"))
     if fee_factor > Decimal("0.0"):
-        breakeven_price = round_rub(total_investment / fee_factor)
+        # Use ROUND_CEILING to guarantee breakeven covers 100% of fees and cost
+        breakeven_price = round_rub(total_investment / fee_factor, rounding=ROUND_CEILING)
     else:
         breakeven_price = total_investment
 
@@ -125,20 +126,33 @@ def estimate_fair_resale_price(account: Dict[str, Any]) -> Decimal:
 
 def evaluate_arbitrage_opportunity(account: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Full economic evaluation of an account listing candidate.
+    Full economic evaluation of an account listing candidate with multi-scenario forecasting.
     """
-    purchase_price = Decimal(str(account.get("price", 0.0)))
+    try:
+        purchase_price = Decimal(str(account.get("price", 0.0)))
+    except Exception:
+        purchase_price = Decimal("0.0")
+
     target_resale = estimate_fair_resale_price(account)
-    metrics = calculate_profit(purchase_price, target_resale)
+
+    # Multi-scenario forecasting: Conservative (85%), Baseline (100%), Optimistic (120%)
+    cons_resale = round_rub(target_resale * Decimal("0.85"))
+    opt_resale = round_rub(target_resale * Decimal("1.20"))
+
+    metrics_baseline = calculate_profit(purchase_price, target_resale)
+    metrics_conservative = calculate_profit(purchase_price, cons_resale)
+    metrics_optimistic = calculate_profit(purchase_price, opt_resale)
 
     # Rejection checks
     rejection_reasons = []
+    if purchase_price <= Decimal("0.0") or purchase_price.is_nan() or purchase_price.is_infinite():
+        rejection_reasons.append(f"Invalid non-positive purchase price {purchase_price} RUB")
     if purchase_price > settings.MAX_PURCHASE_PRICE:
         rejection_reasons.append(f"Price {purchase_price} RUB exceeds max limit {settings.MAX_PURCHASE_PRICE} RUB")
-    if metrics.net_profit < settings.MIN_NET_PROFIT:
-        rejection_reasons.append(f"Profit {metrics.net_profit} RUB below threshold {settings.MIN_NET_PROFIT} RUB")
-    if metrics.roi_percent < settings.MIN_ROI_PERCENT:
-        rejection_reasons.append(f"ROI {metrics.roi_percent}% below threshold {settings.MIN_ROI_PERCENT}%")
+    if metrics_baseline.net_profit < settings.MIN_NET_PROFIT:
+        rejection_reasons.append(f"Profit {metrics_baseline.net_profit} RUB below threshold {settings.MIN_NET_PROFIT} RUB")
+    if metrics_baseline.roi_percent < settings.MIN_ROI_PERCENT:
+        rejection_reasons.append(f"ROI {metrics_baseline.roi_percent}% below threshold {settings.MIN_ROI_PERCENT}%")
 
     is_approved = len(rejection_reasons) == 0
 
@@ -155,14 +169,31 @@ def evaluate_arbitrage_opportunity(account: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "is_approved": is_approved,
-        "purchase_price": metrics.purchase_price,
-        "target_resale_price": metrics.resale_price,
-        "buy_fee": metrics.buy_fee,
-        "resale_fee": metrics.resale_fee,
-        "total_investment": metrics.total_investment,
-        "net_profit": metrics.net_profit,
-        "roi_percent": metrics.roi_percent,
-        "breakeven_price": metrics.breakeven_price,
+        "purchase_price": metrics_baseline.purchase_price,
+        "target_resale_price": metrics_baseline.resale_price,
+        "buy_fee": metrics_baseline.buy_fee,
+        "resale_fee": metrics_baseline.resale_fee,
+        "total_investment": metrics_baseline.total_investment,
+        "net_profit": metrics_baseline.net_profit,
+        "roi_percent": metrics_baseline.roi_percent,
+        "breakeven_price": metrics_baseline.breakeven_price,
         "confidence": confidence_score,
         "rejection_reasons": rejection_reasons,
+        "scenarios": {
+            "conservative": {
+                "resale_price": metrics_conservative.resale_price,
+                "net_profit": metrics_conservative.net_profit,
+                "roi_percent": metrics_conservative.roi_percent,
+            },
+            "baseline": {
+                "resale_price": metrics_baseline.resale_price,
+                "net_profit": metrics_baseline.net_profit,
+                "roi_percent": metrics_baseline.roi_percent,
+            },
+            "optimistic": {
+                "resale_price": metrics_optimistic.resale_price,
+                "net_profit": metrics_optimistic.net_profit,
+                "roi_percent": metrics_optimistic.roi_percent,
+            },
+        },
     }

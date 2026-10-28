@@ -20,7 +20,11 @@ DEFAULT_DB_PATH = Path(settings.DATABASE_PATH)
 
 class Database:
     def __init__(self, db_path: Optional[Path] = None):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self._custom_db_path = db_path
+
+    @property
+    def db_path(self) -> Path:
+        return self._custom_db_path or Path(settings.DATABASE_PATH)
 
     @asynccontextmanager
     async def get_connection(self) -> AsyncGenerator[aiosqlite.Connection, None]:
@@ -28,6 +32,7 @@ class Database:
         async with aiosqlite.connect(self.db_path) as conn:
             conn.row_factory = aiosqlite.Row
             yield conn
+
 
     async def init_db(self) -> None:
         """Creates tables if they do not exist and populates initial simulation balance if empty."""
@@ -183,7 +188,7 @@ class Database:
                 INSERT INTO purchases (item_id, title, buy_price, fee, status, credentials)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (item_id, title, float(price), float(fee), status, credentials)
+                (item_id, title, str(price), str(fee), status, credentials)
             )
             purchase_id = cursor.lastrowid
             # Update listing status if exists
@@ -199,10 +204,11 @@ class Database:
                 INSERT INTO ledger_entries (tx_type, amount, balance_after, description, reference_id)
                 VALUES ('purchase', ?, ?, ?, ?)
                 """,
-                (float(-total_spent), float(new_bal), f"Purchase lot #{item_id}: {title}", f"BUY-{item_id}")
+                (str(-total_spent), str(new_bal), f"Purchase lot #{item_id}: {title}", f"BUY-{item_id}")
             )
             await conn.commit()
             return purchase_id
+
 
     async def get_purchases(self, limit: int = 50) -> List[Dict[str, Any]]:
         async with self.get_connection() as conn:
@@ -233,7 +239,7 @@ class Database:
                 INSERT INTO resale_items (purchase_id, item_id, target_price, original_price, title, description, status)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (purchase_id, item_id, float(target_price), float(original_price), title, description, status)
+                (purchase_id, item_id, str(target_price), str(original_price), title, description, status)
             )
             resale_id = cursor.lastrowid
             await conn.commit()
@@ -294,10 +300,11 @@ class Database:
                 INSERT INTO ledger_entries (tx_type, amount, balance_after, description, reference_id)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (tx_type, float(amount), float(new_bal), description, reference_id)
+                (tx_type, str(amount), str(new_bal), description, reference_id)
             )
             await conn.commit()
             return new_bal
+
 
     # --- Logging Operations ---
     async def add_log(self, level: str, message: str, module: str = "") -> None:

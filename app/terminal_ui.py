@@ -11,6 +11,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
@@ -40,9 +41,9 @@ class TerminalUI:
     def print_header(self, title: str):
         self.console.clear()
         mode_text = (
-            "[bold yellow]SIMULATION MODE — REAL TRANSACTIONS DISABLED[/bold yellow]"
-            if settings.APP_MODE == "simulation" or not settings.get_token()
-            else "[bold green]LIVE MODE — REAL TRANSACTIONS ACTIVE[/bold green]"
+            "[bold green]LIVE MODE — REAL TRANSACTIONS ACTIVE[/bold green]"
+            if settings.is_live_allowed()
+            else "[bold yellow]SIMULATION MODE — REAL TRANSACTIONS DISABLED[/bold yellow]"
         )
         self.console.print(
             Panel.fit(
@@ -51,6 +52,7 @@ class TerminalUI:
                 border_style="cyan"
             )
         )
+
 
     def pause(self):
         self.console.print("\n[dim]Нажмите Enter, чтобы продолжить...[/dim]")
@@ -150,7 +152,7 @@ class TerminalUI:
 
             table.add_row(
                 str(c["item_id"]),
-                c["title"],
+                escape(str(c["title"])),
                 f"{c['price']:.2f} ₽",
                 c["country"],
                 f"[{risk_style}]{c['risk_level']}[/]",
@@ -177,18 +179,20 @@ class TerminalUI:
 
     async def _inspect_and_purchase_flow(self, item: Dict[str, Any]):
         self.print_header(f"Анализ лота #{item['item_id']}")
-        self.console.print(f"[bold cyan]Заголовок:[/] {item['title']}")
-        self.console.print(f"[bold cyan]Описание:[/] {item.get('description', 'Нет описания')}")
+        self.console.print(f"[bold cyan]Заголовок:[/] {escape(str(item['title']))}")
+        self.console.print(f"[bold cyan]Описание:[/] {escape(str(item.get('description', 'Нет описания')))}")
         self.console.print(f"[bold cyan]Цена закупки:[/] [yellow]{item['price']:.2f} RUB[/]")
         self.console.print(f"[bold cyan]Оценка перепродажи:[/] [green]{item['target_resale_price']:.2f} RUB[/]")
         self.console.print(f"[bold cyan]Ожидаемая чистая прибыль:[/] [green]{item['net_profit']:.2f} RUB[/] (ROI: {item['roi_percent']:.1f}%)")
         self.console.print(f"[bold cyan]Уровень риска:[/] {item['risk_level']} (Доверие: {item['confidence'] * 100:.0f}%)")
-        self.console.print(f"[bold cyan]Объяснение:[/] {item['explanation']}")
+        self.console.print(f"[bold cyan]Объяснение:[/] {escape(str(item['explanation']))}")
 
         if item.get("contradictions"):
-            self.console.print(f"[bold red]Обнаруженные противоречия:[/] {'; '.join(item['contradictions'])}")
+            escaped_contra = [escape(str(ct)) for ct in item["contradictions"]]
+            self.console.print(f"[bold red]Обнаруженные противоречия:[/] {'; '.join(escaped_contra)}")
         if item.get("flags"):
             self.console.print(f"[bold yellow]Флаги риска:[/] {', '.join(item['flags'])}")
+
 
         self.console.print("\nОпции:")
         self.console.print("  [1] Купить этот аккаунт")
@@ -257,7 +261,12 @@ class TerminalUI:
         item["explanation"] = inspection.explanation
         item["contradictions"] = inspection.contradictions
         item["flags"] = inspection.flags
-        item["is_approved"] = pricing["is_approved"] and inspection.is_safe
+        item["is_approved"] = (
+            pricing["is_approved"]
+            and inspection.recommendation == "APPROVE"
+            and inspection.confidence_score >= settings.MIN_CONFIDENCE_SCORE
+        )
+
 
         await self._inspect_and_purchase_flow(item)
 
@@ -380,7 +389,7 @@ class TerminalUI:
                 table.add_row(
                     str(p["id"]),
                     str(p["item_id"]),
-                    p["title"],
+                    escape(str(p["title"])),
                     f"{p['buy_price']:.2f} ₽",
                     f"{p['fee']:.2f} ₽",
                     f"[{st_style}]{p['status']}[/]",
@@ -439,11 +448,12 @@ class TerminalUI:
                 table.add_row(
                     str(r["id"]),
                     str(r["item_id"]),
-                    r["title"],
+                    escape(str(r["title"])),
                     f"{r['original_price']:.2f} ₽",
                     f"{r['target_price']:.2f} ₽",
                     f"[{st_style}]{r['status']}[/]",
                 )
+
             self.console.print(table)
 
         self.console.print("\nДействия:")

@@ -27,19 +27,24 @@ venv/
 ENV/
 env/
 
-# Databases
+# Databases and runtime data
 *.db
 *.sqlite
 *.sqlite3
-data/*.db
-data/*.sqlite
+data/
+
 
 # Environment and secrets
 .env
+.env.*
 .env.local
 *.pem
 *.key
 credentials.json
+*.session
+*.session-journal
+tdata/
+
 
 # Pytest / Coverage / Tooling
 .pytest_cache/

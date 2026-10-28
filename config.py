@@ -45,10 +45,12 @@ class Settings(BaseSettings):
     # --- LZT Market API Credentials ---
     LZT_API_TOKEN: str = Field(
         default="",
+        repr=False,
         description="Official LZT Market Bearer API token."
     )
     LZT_API_KEY: str = Field(
         default="",
+        repr=False,
         description="Alias for LZT_API_TOKEN."
     )
     LZT_API_BASE_URL: str = Field(
@@ -65,8 +67,9 @@ class Settings(BaseSettings):
     )
 
     # --- Telegram Notification Settings (Optional) ---
-    TELEGRAM_BOT_TOKEN: str = Field(default="")
+    TELEGRAM_BOT_TOKEN: str = Field(default="", repr=False)
     TELEGRAM_ADMIN_CHAT_ID: str = Field(default="")
+
 
     # --- Financial Thresholds (Calculated using Decimal) ---
     MIN_NET_PROFIT: Decimal = Field(
@@ -109,7 +112,7 @@ class Settings(BaseSettings):
         default="local",
         description="AI text analysis provider: 'local' (built-in rule/heuristic engine), 'openai', 'gemini', 'anthropic'."
     )
-    LLM_API_KEY: str = Field(default="")
+    LLM_API_KEY: str = Field(default="", repr=False)
     LLM_MODEL: str = Field(default="gpt-4o-mini")
 
     # --- Storage & Paths ---
@@ -188,6 +191,10 @@ def save_env_file(config_dict: dict) -> None:
             updated_lines.append(f"{k}={v}")
 
     ENV_PATH.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+    try:
+        os.chmod(ENV_PATH, 0o600)
+    except Exception:
+        pass
 
     # Reload global settings
     global settings
